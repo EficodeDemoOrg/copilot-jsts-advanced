@@ -1,6 +1,8 @@
-# Handoff: Reimplement Weather App in JS/TS
+# Handoff: Implement Weather App
 
-This document describes the Python weather app in detail so that an agent can reimplement it as a JS/TS project in a new repository. The goal is a **functionally equivalent** application with the same architecture, the same API surface, the same frontend, and — critically — the same Copilot exercise infrastructure (instructions, agents, exercises).
+This document describes a weather application in detail so that an agent can implement it in a new repository. The goal is a fully working application with a clean layered architecture, a complete REST API, a static frontend dashboard, and — critically — GitHub Copilot exercise infrastructure (instructions, agents, exercises).
+
+> **Reference implementation:** The JS/TS version of this app lives in the `copilot-jsts-advanced` repository and can be used as a reference for behavior, API contracts, and test coverage. When in doubt about a specification detail, the JS/TS implementation is the source of truth.
 
 ---
 
@@ -8,44 +10,45 @@ This document describes the Python weather app in detail so that an agent can re
 
 This is **not** a production application. It is a **GitHub Copilot exercise environment** — a fully working weather service that serves as the substrate for a workshop teaching participants to build agentic workflows with GitHub Copilot: custom agents, skills, subagents, hooks, and MCP integration. The application code is complete and tested; the exercises focus on **extending** the tooling around it.
 
-The JS/TS port must be equally complete and tested before the workshop begins. Participants should never need to fix application bugs — they build Copilot tooling **around** a working codebase.
+The implementation must be equally complete and tested before the workshop begins. Participants should never need to fix application bugs — they build Copilot tooling **around** a working codebase.
 
 ---
 
 ## 2. What the Application Does
 
-- Fetches real-time weather data from the [OpenWeatherMap API](https://openweathermap.org/api) (free tier)
+- Fetches real-time weather data from the [OpenWeatherMap One Call API 3.0](https://openweathermap.org/api/one-call-3) (free tier: 1,000 calls/day)
 - Manages a collection of saved locations (in-memory, no database)
-- Serves a static HTML/JS dashboard with current weather, 5-day forecast charts (Chart.js), and weather alerts
+- Serves a static HTML/JS dashboard with current weather, 5-day forecast charts (Chart.js), and government weather alerts
 - Provides a clean REST API with full CRUD for locations and weather queries
+- Provides interactive API docs (Swagger/OpenAPI) at `/docs`
 
 ---
 
 ## 3. Architecture — Layered Structure
 
-The Python version uses a strict layered architecture. The JS/TS version must replicate this separation of concerns. The agent may choose any web framework (Express, Fastify, Hono, NestJS, etc.) but **must** preserve these layers:
+The application uses a strict layered architecture. The implementing agent may choose any idiomatic web framework for the target language but **must** preserve these layers:
 
 ### 3.1 Layers
 
-| Layer | Python Location | Responsibility |
-|-------|-----------------|----------------|
-| **Routers** | `src/weather_app/routers/` | HTTP request handling only. Validate input, call services, return responses. **No business logic.** |
-| **Services** | `src/weather_app/services/` | Business logic. `WeatherService` orchestrates the API client, handles unit conversion, evaluates weather alerts. `OpenWeatherMapClient` handles all external HTTP communication. |
-| **Repositories** | `src/weather_app/repositories/` | Data access. `LocationRepository` provides CRUD over an in-memory object/Map. No database. |
-| **Models** | `src/weather_app/models.py` | Type definitions / validation schemas shared across all layers. In TS, use Zod, io-ts, or TypeBox for runtime validation (corresponding to Pydantic in Python). |
-| **Utils** | `src/weather_app/utils/` | Pure, stateless helper functions (temperature/wind converters). No side effects, no I/O. |
-| **Dependencies / DI** | `src/weather_app/dependencies.py` | Dependency injection wiring. Factory functions for settings, services, repositories. Tests override these. |
-| **Config** | `src/weather_app/config.py` | Settings loaded from environment variables / `.env` file. |
-| **Static frontend** | `src/weather_app/static/` | Vanilla JS + CSS + HTML dashboard served by the backend. |
+| Layer | Responsibility |
+|-------|----------------|
+| **Routers / Handlers** | HTTP request handling only. Validate input, call services, return responses. **No business logic.** |
+| **Services** | Business logic. `WeatherService` orchestrates the API client and handles unit conversion. `OpenWeatherMapClient` handles all external HTTP communication. |
+| **Repositories** | Data access. `LocationRepository` provides CRUD over an in-memory Map. No database. |
+| **Models / Types** | Type definitions and validation schemas shared across all layers. Use the language's idiomatic validation library (Zod for TS, Pydantic for Python, struct tags + validator for Go, etc.). |
+| **Utils** | Pure, stateless helper functions (temperature/wind converters). No side effects, no I/O. |
+| **Dependencies / DI** | Dependency injection wiring. Factory functions or a container that creates settings, services, and repositories. Tests override these to inject mocks. |
+| **Config** | Settings loaded from environment variables / `.env` file. |
+| **Static Frontend** | Vanilla JS + CSS + HTML dashboard served by the backend as static files. |
 
 ### 3.2 Key Architectural Rules
 
-- Routers never contain business logic.
-- Services never raise HTTP errors — they throw domain exceptions.
-- Routers catch domain exceptions and translate to HTTP errors (or global error handlers do it).
-- The repository is synchronous (in-memory Map/object).
-- All HTTP-facing code (routers, services, API client) is async.
-- Custom domain exceptions form a hierarchy (see §5.5).
+- Routers/handlers **never** contain business logic.
+- Services **never** return or raise HTTP errors — they throw/return domain errors.
+- Routers/handlers or a global error handler catch domain errors and translate to HTTP responses.
+- The repository is synchronous (in-memory Map).
+- All HTTP-facing code (routers, services, API client) uses the language's async/concurrency model where appropriate.
+- Custom domain errors form a hierarchy (see §5.5).
 - Dependency injection allows tests to swap in mocks without touching production code.
 
 ---
@@ -58,7 +61,7 @@ The Python version uses a strict layered architecture. The JS/TS version must re
 |--------|------|-------------|----------|-------------|
 | GET | `/api/weather/current` | `lat` (float, -90..90, required), `lon` (float, -180..180, required), `units` (enum: celsius/fahrenheit/kelvin, default: celsius) | `CurrentWeather` | Current weather for coordinates |
 | GET | `/api/weather/forecast` | `lat`, `lon`, `days` (int, 1..5, default: 5), `units` | `Forecast` | Multi-day daily forecast |
-| GET | `/api/weather/alerts` | `lat`, `lon` | `WeatherAlert[]` | Weather alerts based on threshold evaluation |
+| GET | `/api/weather/alerts` | `lat`, `lon` | `WeatherAlert[]` | Government weather alerts for coordinates |
 
 ### 4.2 Location Endpoints
 
@@ -76,9 +79,9 @@ The Python version uses a strict layered architecture. The JS/TS version must re
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/` | Serves the dashboard HTML |
-| GET | `/static/*` | Serves static assets |
-
-The application should also provide interactive API docs (Swagger-like), equivalent to FastAPI's auto-generated `/docs`.
+| GET | `/static/*` | Serves static assets (CSS, JS) |
+| GET | `/docs` | Interactive Swagger/OpenAPI UI |
+| GET | `/openapi.json` | OpenAPI spec as JSON |
 
 ---
 
@@ -86,14 +89,15 @@ The application should also provide interactive API docs (Swagger-like), equival
 
 ### 5.1 Models / Types
 
-These are the data structures used across all layers. In TS, implement as interfaces/types with runtime validation (e.g., Zod schemas).
+These are the data structures used across all layers. Field names in the API JSON responses use **camelCase** (matching the frontend expectations). Internal naming may follow language conventions.
 
 #### Enums
 
 ```
 TemperatureUnit: "celsius" | "fahrenheit" | "kelvin"
-AlertSeverity: "low" | "medium" | "high" | "extreme"
 ```
+
+> **Note:** The `AlertSeverity` enum from the original Python PRD has been removed. The JS/TS implementation uses **government alerts** from the OWM API directly (see §5.4), which do not have a severity field. Alert threshold settings are still present in config (§5.2) as reserved fields for future custom alert support.
 
 #### Coordinates
 ```
@@ -106,7 +110,7 @@ AlertSeverity: "low" | "medium" | "high" | "extreme"
   id: UUID (auto-generated),
   name: string (1..200 chars),
   coordinates: Coordinates,
-  created_at: datetime (auto-generated)
+  createdAt: ISO 8601 datetime string (auto-generated)
 }
 ```
 
@@ -115,7 +119,7 @@ AlertSeverity: "low" | "medium" | "high" | "extreme"
 { name: string (1..200 chars), lat: float (-90..90), lon: float (-180..180) }
 ```
 
-#### LocationUpdate (request body, all optional)
+#### LocationUpdate (request body, all fields optional)
 ```
 { name?: string (1..200 chars), lat?: float (-90..90), lon?: float (-180..180) }
 ```
@@ -124,15 +128,15 @@ AlertSeverity: "low" | "medium" | "high" | "extreme"
 ```
 {
   temperature: float,
-  feels_like: float,
+  feelsLike: float,
   humidity: float (0..100),
   pressure: float,
-  wind_speed: float (≥0),
-  wind_direction: int (0..360),
+  windSpeed: float (≥0),
+  windDirection: int (0..360),
   description: string,
   icon: string,
-  timestamp: datetime,
-  location_name: string,
+  timestamp: int (unix epoch seconds),
+  locationName: string,
   units: TemperatureUnit (default: "celsius")
 }
 ```
@@ -140,9 +144,9 @@ AlertSeverity: "low" | "medium" | "high" | "extreme"
 #### ForecastDay
 ```
 {
-  forecast_date: date,
-  temp_min: float,
-  temp_max: float,
+  date: string (YYYY-MM-DD),
+  tempMin: float,
+  tempMax: float,
   humidity: float (0..100),
   description: string,
   icon: string
@@ -152,20 +156,21 @@ AlertSeverity: "low" | "medium" | "high" | "extreme"
 #### Forecast
 ```
 {
-  location_name: string,
+  locationName: string,
   units: TemperatureUnit (default: "celsius"),
   days: ForecastDay[]
 }
 ```
 
-#### WeatherAlert
+#### WeatherAlert (government alerts from OWM)
 ```
 {
-  alert_type: string,
-  message: string,
-  severity: AlertSeverity,
-  value: float,
-  threshold: float
+  senderName: string,
+  event: string,
+  start: int (unix epoch seconds),
+  end: int (unix epoch seconds),
+  description: string,
+  tags: string[]
 }
 ```
 
@@ -175,58 +180,101 @@ Load from environment variables or `.env` file:
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `OPENWEATHERMAP_API_KEY` | string | `""` | API key (empty for tests) |
-| `OPENWEATHERMAP_BASE_URL` | string | `https://api.openweathermap.org/data/2.5` | API base URL |
-| `APP_NAME` | string | `"Weather App"` | Application name |
+| `OPENWEATHERMAP_API_KEY` | string | `""` | API key (empty string is valid for tests) |
+| `OPENWEATHERMAP_BASE_URL` | string | `https://api.openweathermap.org/data/3.0` | One Call API 3.0 base URL |
+| `APP_NAME` | string | `"Weather App"` | Application name (used in Swagger docs) |
+| `APP_PORT` | int | `3000` | HTTP server port |
 | `DEBUG` | boolean | `false` | Debug mode |
-| `ALERT_WIND_SPEED_THRESHOLD` | float | `20.0` | m/s |
-| `ALERT_TEMP_HIGH_THRESHOLD` | float | `40.0` | °C |
-| `ALERT_TEMP_LOW_THRESHOLD` | float | `-20.0` | °C |
-| `ALERT_HUMIDITY_THRESHOLD` | float | `90.0` | % |
+| `ALERT_WIND_SPEED_THRESHOLD` | float | `20.0` | m/s — reserved for future custom alerts |
+| `ALERT_TEMP_HIGH_THRESHOLD` | float | `40.0` | °C — reserved for future custom alerts |
+| `ALERT_TEMP_LOW_THRESHOLD` | float | `-20.0` | °C — reserved for future custom alerts |
+| `ALERT_HUMIDITY_THRESHOLD` | float | `90.0` | % — reserved for future custom alerts |
+
+> **Note:** The `ALERT_*` thresholds are not used by the current implementation (which uses government alerts from the OWM API). They are kept in config as reserved settings for a future exercise where participants might add custom threshold-based alerting. The implementation should load them but need not use them.
 
 ### 5.3 OpenWeatherMap Client
 
-An async HTTP client wrapping the OWM API. Key behaviors:
+An HTTP client wrapping the **One Call API 3.0** (`/data/3.0/onecall`). This is a single endpoint that returns current weather, daily forecasts, and government alerts — controlled by an `exclude` parameter.
 
-- Calls `/weather` with `units=metric` → returns `CurrentWeather` (Celsius, m/s)
-- Calls `/forecast` with `units=metric` → returns `(cityName, ForecastDay[])`. The 3-hour interval data must be **aggregated into daily summaries**: min/max temp, average humidity, most common description/icon per day.
-- Adds `appid` query parameter automatically.
-- Throws `WeatherAPINotFoundError` on 404.
-- Throws `WeatherAPIConnectionError` on network/timeout errors.
-- Throws `WeatherAPIError` on other non-200 responses (with status code and message).
-- Uses a 10-second timeout.
+#### Key behaviors
+
+- All requests use `units=metric` (Celsius, m/s) — temperature conversion happens in the service layer.
+- All requests include `appid` (API key) as a query parameter.
+- Uses a **10-second timeout**.
+- Validates API responses using the language's validation library (Zod schemas in TS, struct parsing in Go, etc.).
+
+#### Methods
+
+| Method | OWM `exclude` parameter | Returns |
+|--------|------------------------|---------|
+| `getCurrentWeather(lat, lon)` | `minutely,hourly,daily,alerts` | `{ current: OwmCurrentData, timezone: string }` |
+| `getDailyForecast(lat, lon)` | `current,minutely,hourly,alerts` | `{ daily: OwmDailyData[], timezone: string }` |
+| `getAlerts(lat, lon)` | `current,minutely,hourly,daily` | `OwmAlert[]` (empty array if no alerts) |
+
+All three methods call a shared private function `fetchOneCall(lat, lon, exclude[])` that:
+1. Builds the URL: `{baseUrl}/onecall?lat={lat}&lon={lon}&exclude={csv}&units=metric&appid={key}`
+2. Makes the HTTP request with a 10-second timeout
+3. On **network/timeout error** → throws `WeatherAPIConnectionError`
+4. On **404** → throws `WeatherAPINotFoundError`
+5. On **other non-200** → throws `WeatherAPIError(statusCode, responseBody)`
+6. On success → validates/parses the JSON response and returns it
+
+#### City Name Handling
+
+The One Call API 3.0 does **not** return a city name (unlike the old 2.5 API). Instead, it returns a `timezone` string like `"Europe/London"` or `"America/New_York"`. The service layer extracts a human-readable location name from this:
+- Split on `/`, take the last part, replace underscores with spaces
+- `"Europe/London"` → `"London"`, `"America/New_York"` → `"New York"`
+
+When fetching weather for a saved location, the service passes the location's stored `name` instead of using the timezone fallback.
 
 ### 5.4 Weather Service
 
-Business logic layer. Methods:
+Business logic layer. Depends on `OpenWeatherMapClient` and `Settings`.
 
-- `getCurrentWeather(lat, lon, units)` — fetches via client, converts temperatures if units ≠ celsius.
-- `getForecast(lat, lon, days, units)` — fetches via client, converts temperatures.
-- `getAlerts(lat, lon)` — fetches current weather, evaluates thresholds:
-  - **high_wind**: wind_speed ≥ threshold → MEDIUM; wind_speed ≥ threshold × 1.5 → HIGH
-  - **extreme_heat**: temp ≥ high_threshold → HIGH; temp ≥ high_threshold + 5 → EXTREME
-  - **extreme_cold**: temp ≤ low_threshold → HIGH; temp ≤ low_threshold - 10 → EXTREME
-  - **high_humidity**: humidity ≥ threshold → LOW
+#### Methods
 
-### 5.5 Exception Hierarchy
+- **`getCurrentWeather(lat, lon, units, locationName?)`** — Fetches current weather via client. Converts temperatures if `units ≠ celsius`. Uses the optional `locationName` if provided (for saved locations), otherwise falls back to the timezone-derived name.
+
+- **`getForecast(lat, lon, days, units, locationName?)`** — Fetches daily forecast via client, slices the daily array to the requested number of `days`, converts temperatures. Same `locationName` logic.
+
+- **`getAlerts(lat, lon)`** — Fetches government alerts via client. Maps OWM's snake_case response fields to the domain's camelCase format. Returns an empty array when no alerts are active.
+
+#### Temperature Conversion
+
+The service has a helper function that converts from Celsius to the requested unit:
+- `celsius` → no conversion (pass through)
+- `fahrenheit` → `celsiusToFahrenheit()`
+- `kelvin` → `celsiusToKelvin()`
+
+This applies to all temperature fields: `temperature`, `feelsLike`, `tempMin`, `tempMax`.
+
+### 5.5 Error Hierarchy
 
 ```
 WeatherAppError (base)
-├── WeatherAPIError (status_code, message)
-│   └── WeatherAPINotFoundError (404)
+├── WeatherAPIError (statusCode, message)
+│   └── WeatherAPINotFoundError (message, statusCode=404)
 ├── WeatherAPIConnectionError (message)
-└── LocationNotFoundError (location_id)
+└── LocationNotFoundError (locationId)
 ```
 
+> In Go, these would be sentinel errors or typed error structs implementing the `error` interface. In languages with exceptions, use a class hierarchy.
+
 Global error handlers map these to HTTP responses:
-- `WeatherAPINotFoundError` → 404
-- `WeatherAPIConnectionError` → 503
-- `WeatherAPIError` → 502
-- `WeatherAppError` → 500
+
+| Error Type | HTTP Status | Response |
+|-----------|-------------|----------|
+| Validation error (Zod, struct tags, etc.) | 422 | `{ error: "Validation error", details: [...] }` |
+| `LocationNotFoundError` | 404 | `{ error: "Location not found: {id}" }` |
+| `WeatherAPINotFoundError` | 404 | `{ error: "Weather data not found for the given location" }` |
+| `WeatherAPIConnectionError` | 503 | `{ error: "{message}" }` |
+| `WeatherAPIError` | 502 | `{ error: "{message}" }` |
+| `WeatherAppError` | 500 | `{ error: "{message}" }` |
+| Unexpected/unhandled | 500 | `{ error: "Internal server error" }` |
 
 ### 5.6 Converter Utilities
 
-Pure functions, all in one file:
+Pure functions, all in one file. No side effects, no I/O.
 
 | Function | Formula | Rounding |
 |----------|---------|----------|
@@ -237,40 +285,48 @@ Pure functions, all in one file:
 | `mpsToMph(mps)` | `mps * 2.23694` | 2 decimals |
 | `degreesToCompass(deg)` | 16-point compass rose, sectors of 22.5° each, N centered at 0° | — |
 
-Compass points: N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW.
+Compass points (16, in order): N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW.
+
+The compass function normalizes negative degrees, uses `round(degrees / 22.5) % 16` as the index.
+
+**Rounding note:** Use `round(value * 100) / 100` or equivalent. Be careful with operator precedence — this was a bug source in the JS/TS implementation.
 
 ### 5.7 Location Repository
 
-In-memory CRUD using a Map/object keyed by UUID.
+In-memory CRUD using a Map/dictionary keyed by UUID string.
 
 | Method | Behavior |
 |--------|----------|
-| `add(data)` | Creates `Location` with auto-generated UUID and timestamp, stores it. |
-| `get(id)` | Returns location or throws `LocationNotFoundError`. |
-| `listAll()` | Returns all locations sorted by `created_at`. |
-| `delete(id)` | Removes location or throws `LocationNotFoundError`. Returns `true`. |
-| `update(id, data)` | Partial update — only non-null/undefined fields. Throws if not found. |
+| `add(data)` | Creates `Location` with auto-generated UUID and ISO 8601 timestamp, stores it. Returns the created location. |
+| `get(id)` | Returns location or throws/returns `LocationNotFoundError`. |
+| `listAll()` | Returns all locations sorted by `createdAt` ascending. |
+| `delete(id)` | Removes location or throws/returns `LocationNotFoundError`. |
+| `update(id, data)` | Partial update — only provided (non-null/non-zero) fields are changed. Throws if not found. Returns updated location. |
 
 ---
 
 ## 6. Frontend (Static Dashboard)
 
-The frontend is **vanilla JS + CSS + HTML** — no frameworks, no build step, no bundler. It is served as static files by the backend. **Port it as-is** to the new project.
+The frontend is **vanilla JS + CSS + HTML** — no frameworks, no build step, no bundler. It is served as static files by the backend.
+
+> **The frontend files from the JS/TS version can be copied verbatim** since they only communicate with `/api/...` endpoints. Just serve the same static files from the new backend.
 
 ### Files
 
-- `index.html` — Semantic HTML with `<header>`, `<main>`, `<section>`, `<footer>`. All interactive elements have IDs used by JS.
-- `style.css` — CSS custom properties on `:root`, mobile-first, system font stack, BEM-like semantic class names.
-- `app.js` — Organized in sections (State, DOM refs, API helpers, rendering, event handlers, initialization). Uses `fetch`, `async/await`, Chart.js 4.x via CDN.
+| File | Description |
+|------|-------------|
+| `index.html` | Semantic HTML with `<header>`, `<main>`, `<section>`, `<footer>`. All interactive elements have IDs used by JS. Loads Chart.js 4.x via CDN. |
+| `style.css` | CSS custom properties on `:root`, mobile-first responsive design, system font stack, BEM-like semantic class names. |
+| `app.js` | Organized in sections: State → DOM refs → API helpers (`apiGet`, `apiPost`, `apiDelete`) → Rendering functions → Event handlers → Initialization. Uses `fetch`, `async/await`. |
 
-The frontend communicates exclusively with `/api/...` endpoints. It displays:
-- Coordinate search bar with unit selector
-- Current weather card
-- 5-day forecast line chart (Chart.js, high/low temperatures)
-- Weather alerts (color-coded by severity)
-- Saved locations sidebar with add/delete
+### Dashboard Features
 
-**The frontend can be reused verbatim** since it only talks to the API. Just serve the same static files.
+- Coordinate search form (latitude, longitude, unit selector dropdown)
+- Current weather card (temperature, feels-like, humidity, pressure, wind, description, icon)
+- 5-day forecast line chart (Chart.js — high/low temperature lines)
+- Government weather alerts section (color-coded by alert tags)
+- Saved locations sidebar with add (name + coordinates) and delete buttons
+- Click a saved location to load its weather
 
 ---
 
@@ -278,7 +334,7 @@ The frontend communicates exclusively with `/api/...` endpoints. It displays:
 
 ### 7.1 General Principles
 
-- **No real API calls — ever.** Unit tests mock at the service boundary; integration tests mock outgoing HTTP.
+- **No real API calls — ever.** Unit tests mock at the service boundary; integration tests mock the OWM client.
 - Tests are complete and passing before the workshop.
 - Test data comes from centralized factory functions, not inline raw objects.
 - Each test verifies exactly one behavior (AAA pattern: Arrange → Act → Assert).
@@ -287,90 +343,90 @@ The frontend communicates exclusively with `/api/...` endpoints. It displays:
 
 ```
 tests/
-├── conftest.{ts,js}          — Shared fixtures: app, client, settings
-├── factories.{ts,js}         — Test data factories for all models
+├── setup / helpers        — Shared test utilities: test settings, test app factory
+├── factories              — Test data factory functions for all models + OWM responses
 ├── unit/
-│   ├── conftest.{ts,js}      — Mock fixtures for unit tests
-│   ├── test_converters        — Pure function tests (parametrized)
-│   ├── test_location_repo     — Repository CRUD tests
-│   ├── test_models            — Validation tests
-│   └── test_weather_service   — Service logic with mocked API client
-└── integration/
-    ├── conftest.{ts,js}       — Integration-specific fixtures
-    ├── test_weather_api        — Full /api/weather/* endpoint tests
-    └── test_locations_api      — Full /api/locations/* CRUD tests
+│   ├── converters         — Pure function tests (parametrized/table-driven)
+│   ├── models             — Validation/parsing tests
+│   ├── location_repo      — Repository CRUD tests
+│   └── weather_service    — Service logic with mocked API client
+├── integration/
+│   ├── weather_api        — Full /api/weather/* endpoint tests via HTTP
+│   └── locations_api      — Full /api/locations/* CRUD tests via HTTP
+└── e2e/
+    └── dashboard          — Playwright browser tests for the frontend
 ```
 
 ### 7.3 Test Framework
 
-Use **Vitest** (recommended for TS projects, fast, native ESM, built-in mocking) or Jest. The test runner must support:
-- Async tests
-- Parametrized tests (`.each` or equivalent)
-- Filtering by marker/tag (e.g., `unit` vs `integration`)
-- HTTP mocking for outgoing requests (e.g., `msw`, `nock`, or framework-specific interceptors)
-- Supertest or equivalent for integration tests against the running app
+Use the language's standard/popular test framework:
+- **Go:** `testing` + `testify` + `httptest`
+- **JS/TS:** Vitest + supertest
+- **Python:** pytest + httpx
+
+The test runner must support: async tests, table-driven/parametrized tests, filtering (unit vs integration), and HTTP testing against the app.
 
 ### 7.4 Frontend Testing with Playwright
 
-**Deviation from the Python version:** The JS/TS version should also include **Playwright** end-to-end tests for the frontend dashboard. The Python version has no frontend tests. This is acceptable and encouraged because:
-- Playwright has a decent MCP Server, which adds value for the Copilot exercises
-- It's straightforward to set up in a JS/TS project
-- It demonstrates an additional testing layer
-
-Playwright tests should cover:
+Include **Playwright** end-to-end tests for the frontend dashboard. Playwright tests should cover:
 - Loading the dashboard
 - Searching for coordinates and seeing weather results
 - Saving/deleting locations
 - Forecast chart rendering
 - Alert display
 
+Playwright config should use a `webServer` directive to start the app before tests run.
+
 ### 7.5 Factory Functions
 
-Port all factories from the Python version. These are crucial for test consistency:
+All factory functions accept partial overrides (options/kwargs) to customize any field. Defaults produce **valid, realistic data**.
 
-| Factory | Purpose |
-|---------|---------|
-| `makeCoordinates()` | Default: London (51.51, -0.13) |
-| `makeLocation()` | Full location with UUID and timestamp |
-| `makeLocationCreate()` | Request body for POST |
-| `makeLocationUpdate()` | Request body for PUT (all optional) |
-| `makeCurrentWeather()` | Typical London weather defaults |
-| `makeForecastDay()` | Single forecast day |
-| `makeForecast()` | Multi-day forecast (default 3 days) |
-| `makeWeatherAlert()` | High wind alert by default |
-| `makeOwmCurrentWeatherResponse()` | Raw OWM `/weather` API response dict |
-| `makeOwmForecastResponse()` | Raw OWM `/forecast` API response dict (generates 3-hour intervals) |
-
-All factories accept keyword/option overrides.
+| Factory | Purpose | Defaults |
+|---------|---------|----------|
+| `makeCoordinates()` | Default coordinates | London (51.51, -0.13) |
+| `makeLocation()` | Full location with UUID and timestamp | London, generated UUID, current time |
+| `makeLocationCreate()` | Request body for POST | London |
+| `makeLocationUpdate()` | Request body for PUT (all optional) | Name override only |
+| `makeCurrentWeather()` | Domain-level current weather | 15°C, 72% humidity, London |
+| `makeForecastDay()` | Single forecast day | Tomorrow, 10-18°C, scattered clouds |
+| `makeForecast()` | Multi-day forecast | 3 days, London, celsius |
+| `makeWeatherAlert()` | Single government alert | Wind warning from Met Office |
+| `makeOwmCurrentWeatherData()` | Raw OWM `current` response block | Matches One Call 3.0 `current` schema |
+| `makeOwmDailyData()` | Raw OWM `daily[]` entry | Matches One Call 3.0 `daily` schema |
+| `makeOwmAlert()` | Raw OWM `alerts[]` entry | Matches One Call 3.0 `alerts` schema |
+| `makeOwmOneCallResponse()` | Full OWM One Call response | All sections present |
+| `makeOwmOneCallCurrentOnly()` | OWM response with only `current` | For current weather tests |
+| `makeOwmOneCallForecastOnly()` | OWM response with only `daily` | For forecast tests |
+| `makeOwmOneCallAlertsOnly()` | OWM response with only `alerts` | For alert tests |
 
 ### 7.6 Unit Tests — What to Test
 
 | Module | Tests |
 |--------|-------|
-| Converters | All conversion functions with known pairs, edge cases, rounding, type checks. Parametrized. |
-| Models | Valid/invalid inputs, boundary values, enum validation, default values, partial updates. |
-| Location Repo | CRUD operations, not-found errors, ordering, multiple entries, idempotency. |
-| Weather Service | Unit conversion (all 3 units), non-temp fields unchanged, alert thresholds (all 4 types + severity levels), forecast multi-day conversion. Mock the API client. |
+| Converters | All conversion functions with known input/output pairs, edge cases (0, negative, -40 crossover), rounding to 2 decimals. Parametrized/table-driven. Compass: all 16 directions, boundary values (0°, 11.25°, 348.75°, 360°), negative degrees. |
+| Models/Validation | Valid/invalid inputs, boundary values (-90/90 for lat, -180/180 for lon), enum validation, default values, partial updates (LocationUpdate with all combinations). |
+| Location Repo | CRUD operations: add returns UUID + timestamp, get existing, get non-existent throws, listAll sorted by createdAt, delete existing, delete non-existent throws, update partial fields, update non-existent throws, multiple entries with unique IDs. |
+| Weather Service | Unit conversion for all 3 units (celsius passthrough, fahrenheit, kelvin). Non-temperature fields unchanged after conversion. Forecast day slicing (request 3 of 7 days). Location name from timezone fallback. Location name override parameter. Alert mapping from OWM snake_case to camelCase. Empty alerts when OWM returns none. |
 
 ### 7.7 Integration Tests — What to Test
 
 | Endpoint | Tests |
 |----------|-------|
-| GET /api/weather/current | 200 with valid coords, 200 with fahrenheit, 422 for missing params, 422 for invalid lat, 404 when OWM returns 404, 502 on OWM server error |
-| GET /api/weather/forecast | 200 with forecast data, days param limiting, 422 for days out of range, kelvin conversion |
-| GET /api/weather/alerts | 200 with no alerts (normal weather), 200 with multiple alerts (extreme conditions) |
-| POST /api/locations | 201 valid, 422 invalid lat, 422 empty name, multiple creates with unique IDs |
-| GET /api/locations | 200 empty list, 200 after creating |
-| GET /api/locations/:id | 200 existing, 404 nonexistent |
-| PUT /api/locations/:id | 200 update name, 200 update coords, 404 nonexistent |
-| DELETE /api/locations/:id | 204 existing, 404 nonexistent, verify deleted |
-| GET /api/locations/:id/weather | 200 with mocked OWM, 404 nonexistent location |
+| GET /api/weather/current | 200 with valid coords (celsius default), 200 with fahrenheit conversion, 422 for missing params, 422 for invalid lat (out of range), 404 when OWM returns 404, 502 on OWM server error |
+| GET /api/weather/forecast | 200 with forecast data, `days` param limits results, 422 for days out of range (0 or 6), kelvin temperature conversion |
+| GET /api/weather/alerts | 200 with empty alerts (no government alerts active), 200 with multiple government alerts |
+| POST /api/locations | 201 valid creation, 422 invalid lat, 422 empty name, multiple creates produce unique IDs |
+| GET /api/locations | 200 empty list, 200 after creating locations |
+| GET /api/locations/:id | 200 existing, 404 non-existent UUID |
+| PUT /api/locations/:id | 200 update name only, 200 update coordinates, 404 non-existent |
+| DELETE /api/locations/:id | 204 existing, 404 non-existent, verify GET returns 404 after delete |
+| GET /api/locations/:id/weather | 200 with mocked OWM (uses location name not timezone), 404 non-existent location |
 
 ---
 
 ## 8. Copilot Infrastructure (CRITICAL)
 
-This is the most important part. The project is a vehicle for teaching Copilot agentic workflows. The following infrastructure **must** be present and adapted for JS/TS.
+This is the most important part. The project is a vehicle for teaching Copilot agentic workflows. The following infrastructure **must** be present and adapted for the target language.
 
 ### 8.1 Directory Structure for Copilot Customization
 
@@ -378,227 +434,260 @@ This is the most important part. The project is a vehicle for teaching Copilot a
 .github/
 ├── copilot-instructions.md          — Always-on project-level context
 ├── instructions/
-│   ├── typescript.instructions.md   — Coding conventions for TS source (applyTo: src/**/*.ts)
-│   ├── testing.instructions.md      — Testing conventions (applyTo: tests/**/*.ts)
-│   └── frontend.instructions.md     — Frontend conventions (applyTo: src/**/static/** or public/**)
+│   ├── {language}.instructions.md   — Coding conventions for source code (applyTo: src/**)
+│   ├── testing.instructions.md      — Testing conventions (applyTo: tests/**)
+│   └── frontend.instructions.md     — Frontend conventions (applyTo: public/**)
 └── agents/
-    └── teacher.agent.md             — Exercise Tutor agent (port as-is, adjust references)
+    └── teacher.agent.md             — Exercise Tutor agent
 ```
 
 ### 8.2 `copilot-instructions.md` (Always-on)
 
-Adapt the Python version. Must cover:
+Must cover:
 - Project overview (Copilot exercise environment, not a production app)
 - Architecture description (layers, responsibilities)
-- Key conventions (TS-specific syntax, lint/format tool, naming)
-- Async patterns
-- Custom exceptions
-- Testing overview (framework, markers, no real API calls)
+- Key conventions (language-specific syntax, lint/format tool, naming)
+- Concurrency/async patterns
+- Custom domain errors
+- Testing overview (framework, no real API calls)
 - Dependency table (framework, HTTP client, validation lib, test stack)
 - Run commands (install, test, lint, format, dev server)
 
-### 8.3 `instructions/typescript.instructions.md`
+### 8.3 Language-specific instructions (`{language}.instructions.md`)
 
-Adapt from `python.instructions.md`. Must cover:
-- Language version (Node.js 20+, TypeScript 5.x+, ESM)
-- Type hints (strict TypeScript, no `any`)
-- Formatting/linting tool (Biome or ESLint + Prettier — pick one, configure in project)
-- Naming conventions (camelCase for functions/vars, PascalCase for classes/types/interfaces, UPPER_SNAKE_CASE for constants)
-- Layer responsibilities (same rules as Python version, adapted syntax examples)
-- Async patterns (async/await everywhere for HTTP-facing code, sync for repository)
-- Error handling (domain exceptions → HTTP exceptions pattern)
-- Dependency injection pattern (adapted for chosen framework)
-- Validation (Zod/TypeBox schemas, equivalent to Pydantic)
+Must cover:
+- Language version and module system
+- Type safety rules (strict typing, no `any`/`interface{}` abuse)
+- Formatting/linting tools
+- Naming conventions (adapted to language: camelCase, snake_case, PascalCase as appropriate)
+- Layer responsibilities (same rules, language-adapted syntax examples)
+- Concurrency patterns
+- Error handling (domain errors → HTTP error mapping)
+- Dependency injection pattern
+- Validation approach
 
-### 8.4 `instructions/testing.instructions.md`
+### 8.4 `testing.instructions.md`
 
-Adapt from Python version. Must cover:
+Must cover:
 - Test framework and configuration
 - Test organization (unit/ vs integration/ vs e2e/)
-- How to filter tests by type (tags, file patterns, or config)
-- Naming convention: `describe`/`it` blocks with descriptive names
+- How to run specific test subsets
+- Test naming conventions
 - AAA pattern
-- Factory usage
-- Mocking strategy: unit tests mock at service boundary, integration tests mock outgoing HTTP
+- Factory usage (always use factories, never inline raw objects)
+- Mocking strategy: unit tests mock at service boundary, integration tests mock the OWM client
 - Dependency overrides for testing
 - Running commands
 
-### 8.5 `instructions/frontend.instructions.md`
+### 8.5 `frontend.instructions.md`
 
-Port largely as-is (it describes vanilla JS conventions). Adjust any references to FastAPI static file serving — the static serving mechanism will differ by framework. Add a note about Playwright tests if frontend testing instructions are relevant here.
+Describes the vanilla JS/CSS/HTML conventions of the static frontend. This is largely language-agnostic since the frontend is the same across all implementations. Note:
+- No build step, no framework, vanilla JS
+- CSS custom properties for theming
+- Chart.js via CDN
+- Playwright for e2e testing
 
 ### 8.6 `teacher.agent.md`
 
-Port the Exercise Tutor agent. It must:
-- Reference `EXERCISES.md` (which will be customized later by the user with the agent)
-- Never write code for participants
-- Guide, review, suggest improvements
-- Know about skills, hooks, agents concepts
-- Reference the correct run commands for the JS/TS stack
-- Reference the correct model comparison docs and VS Code customization docs (these are the same regardless of language)
-
-Key: The teacher agent's instructions are **language-agnostic** in most places. The references to `uv run pytest`, `ruff`, etc. need to change to the JS/TS equivalents. The conceptual guidance (skills vs hooks vs instructions, coordinator patterns, etc.) stays the same.
+The Exercise Tutor agent must:
+- Reference `EXERCISES.md`
+- **Never** write code for participants — guide only
+- Know about Copilot concepts: skills, hooks, agents, instructions, MCP
+- Reference the correct run commands for the target language
+- Point participants to existing files as examples
 
 ---
 
 ## 9. Project Configuration
 
-### 9.1 `package.json`
+### 9.1 Build & Run
 
-Must include:
-- `"type": "module"` (ESM)
-- Scripts: `dev`, `build`, `start`, `test`, `test:unit`, `test:integration`, `test:e2e`, `lint`, `format`
-- Dependencies equivalent to [pyproject.toml dependencies table]:
+The project must have standard lifecycle commands. Map these to the target language's package manager / build tool:
 
-| Python | JS/TS Equivalent |
-|--------|-----------------|
-| fastapi | Express/Fastify/Hono + OpenAPI generator, **or** NestJS (has built-in Swagger) |
-| uvicorn | Node.js built-in or framework's server |
-| httpx | `node-fetch`, `undici`, or built-in `fetch` (Node 18+) |
-| pydantic-settings | `dotenv` + Zod for validation, or `env-schema` |
-| pytest | Vitest or Jest |
-| pytest-asyncio | Built-in to Vitest |
-| pytest-httpx | `msw`, `nock`, or Vitest's `vi.mock` |
-| ruff | Biome or ESLint + Prettier |
+| Command | Purpose |
+|---------|---------|
+| Install dependencies | Download/install all packages |
+| Dev server | Start with hot reload / file watching |
+| Build | Compile / type-check |
+| Start | Run compiled output |
+| Test (all) | Run unit + integration tests |
+| Test (unit) | Run only unit tests |
+| Test (integration) | Run only integration tests |
+| Test (e2e) | Run Playwright tests |
+| Lint | Run linter |
+| Format | Run formatter |
 
-### 9.2 `tsconfig.json`
+### 9.2 `.env.example`
 
-Strict mode, ESM, appropriate target.
+```env
+# OpenWeatherMap API key — get one at https://openweathermap.org/api/one-call-3
+OPENWEATHERMAP_API_KEY=
+OPENWEATHERMAP_BASE_URL=https://api.openweathermap.org/data/3.0
+APP_NAME=Weather App
+APP_PORT=3000
+DEBUG=false
 
-### 9.3 `.env.example`
-
-Same variables as Python version (see §5.2).
+# Alert thresholds (reserved for future custom alert feature)
+ALERT_WIND_SPEED_THRESHOLD=20.0
+ALERT_TEMP_HIGH_THRESHOLD=40.0
+ALERT_TEMP_LOW_THRESHOLD=-20.0
+ALERT_HUMIDITY_THRESHOLD=90.0
+```
 
 ---
 
 ## 10. README.md
 
-The README must mirror the Python version's structure:
+The README must include:
 - Purpose section (Copilot exercise environment)
-- Exercises reference
+- Exercises reference (link to EXERCISES.md)
 - What It Does
 - Tech Stack table
-- Quick Start (get API key, install, configure, run)
+- Quick Start (get API key, install, configure `.env`, run)
 - Run Tests
 - Lint & Format
-- Project Structure (adapted directory tree)
-- API Endpoints tables
+- Project Structure (directory tree)
+- API Endpoints tables (weather + locations)
 - Copilot Custom Instructions section explaining the layered instruction system
-- Backlog section (same backlog item about aligning test factories with real OWM schema)
+- Backlog section
 
 ---
 
-## 11. What NOT to Do in the Initial Stage
+## 11. What NOT to Do
 
-- **Do NOT write or customize EXERCISES.md.** The user will handle exercises customization with the agent later. Include a placeholder or copy the Python version as a starting point, but mark it as "needs customization for JS/TS."
-- **Do NOT add a database.** The in-memory repository is intentional — it keeps the project zero-dependency and simple.
+- **Do NOT write or customize EXERCISES.md.** Include a placeholder with a "needs customization" banner. The user will handle exercises later.
+- **Do NOT add a database.** The in-memory repository is intentional.
 - **Do NOT add authentication.** The app is for workshop use only.
-- **Do NOT add a build step for the frontend.** The frontend must remain vanilla JS served as static files.
+- **Do NOT add a build step for the frontend.** It must remain vanilla JS served as static files.
+- **Do NOT implement custom threshold-based alerts.** Use government alerts from the OWM API. Threshold config settings should be loaded but unused (reserved for a future exercise).
 
 ---
 
 ## 12. Checklist for the Implementing Agent
 
-- [ ] Initialize a new repository with package.json, tsconfig.json, and chosen framework
-- [ ] Implement config/settings loading from env vars
-- [ ] Implement model/type definitions with runtime validation (Zod or equivalent)
-- [ ] Implement domain exception hierarchy
+### Application
+- [ ] Initialize project with build tool, dependency management, linter, formatter
+- [ ] Implement config/settings loading from env vars / `.env` file
+- [ ] Implement model/type definitions with runtime validation
+- [ ] Implement domain error hierarchy
 - [ ] Implement converter utility functions (pure, stateless)
-- [ ] Implement `LocationRepository` (in-memory CRUD)
-- [ ] Implement `OpenWeatherMapClient` (async HTTP client for OWM API)
-- [ ] Implement `WeatherService` (business logic, unit conversion, alerts)
-- [ ] Implement weather router (3 endpoints)
-- [ ] Implement locations router (6 endpoints)
-- [ ] Implement dependency injection / wiring
-- [ ] Implement global error handlers
+- [ ] Implement `LocationRepository` (in-memory CRUD with Map)
+- [ ] Implement `OpenWeatherMapClient` (One Call API 3.0, single `fetchOneCall` method)
+- [ ] Implement `WeatherService` (unit conversion, timezone→name fallback, alert mapping)
+- [ ] Implement weather router/handler (3 GET endpoints)
+- [ ] Implement locations router/handler (6 endpoints including `/:id/weather`)
+- [ ] Implement dependency injection / container wiring
+- [ ] Implement global error handler (domain errors → HTTP status mapping)
 - [ ] Implement app factory with static file serving and root route
-- [ ] Set up Swagger/OpenAPI docs endpoint
-- [ ] Copy frontend static files (index.html, style.css, app.js) — adjust static path if needed
-- [ ] Set up test framework (Vitest/Jest) with unit/integration separation
-- [ ] Implement all factory functions
-- [ ] Implement all unit tests (converters, models, repository, weather service)
-- [ ] Implement all integration tests (weather API, locations API)
+- [ ] Set up Swagger/OpenAPI docs endpoint at `/docs`
+
+### Frontend
+- [ ] Copy frontend files (index.html, style.css, app.js) from the JS/TS reference version
+- [ ] Verify static file serving works (dashboard loads, assets served)
+
+### Tests
+- [ ] Set up test framework with unit/integration/e2e separation
+- [ ] Implement all factory functions (domain models + OWM response shapes)
+- [ ] Implement unit tests: converters, models/validation, location repo, weather service
+- [ ] Implement integration tests: all weather and location endpoints
 - [ ] Set up Playwright for frontend e2e tests
 - [ ] Implement Playwright e2e tests
-- [ ] Set up linter/formatter (Biome or ESLint+Prettier)
+
+### Quality
+- [ ] Set up linter and formatter
+- [ ] Verify lint passes with zero errors
+- [ ] Verify all unit + integration tests pass
+- [ ] Verify the app starts and serves the dashboard at `/`
+- [ ] Verify API docs load at `/docs`
+
+### Copilot Infrastructure
 - [ ] Write `.github/copilot-instructions.md`
-- [ ] Write `.github/instructions/typescript.instructions.md`
+- [ ] Write `.github/instructions/{language}.instructions.md`
 - [ ] Write `.github/instructions/testing.instructions.md`
 - [ ] Write `.github/instructions/frontend.instructions.md`
 - [ ] Write `.github/agents/teacher.agent.md`
 - [ ] Write README.md
-- [ ] Copy EXERCISES.md with a note that it needs JS/TS customization
+- [ ] Create EXERCISES.md placeholder (with "needs customization" banner)
 - [ ] Create `.env.example`
-- [ ] Verify all tests pass
-- [ ] Verify lint passes
-- [ ] Verify the app starts and serves the dashboard
 
 ---
 
-## Appendix A: File-by-File Reference
+## Appendix A: Suggested File Structure
 
-Below is the complete list of Python source files and their JS/TS equivalents. Use this as a mapping guide.
+The exact structure depends on language conventions. Here is a suggested layout:
 
-| Python File | Purpose | JS/TS Equivalent Path (suggested) |
-|------------|---------|-----------------------------------|
-| `src/weather_app/__init__.py` | Package marker | Not needed in TS (ESM) |
-| `src/weather_app/main.py` | App factory, static mount, error handlers | `src/app.ts` or `src/main.ts` |
-| `src/weather_app/config.py` | Settings from env | `src/config.ts` |
-| `src/weather_app/models.py` | Pydantic models | `src/models.ts` (Zod schemas + inferred types) |
-| `src/weather_app/dependencies.py` | DI wiring | `src/dependencies.ts` or framework-specific DI |
-| `src/weather_app/routers/weather.py` | Weather endpoints | `src/routers/weather.ts` |
-| `src/weather_app/routers/locations.py` | Location endpoints | `src/routers/locations.ts` |
-| `src/weather_app/services/exceptions.py` | Exception hierarchy | `src/services/exceptions.ts` |
-| `src/weather_app/services/openweathermap.py` | OWM API client | `src/services/openweathermap.ts` |
-| `src/weather_app/services/weather_service.py` | Business logic | `src/services/weather-service.ts` |
-| `src/weather_app/repositories/location_repo.py` | In-memory CRUD | `src/repositories/location-repo.ts` |
-| `src/weather_app/utils/converters.py` | Pure converters | `src/utils/converters.ts` |
-| `src/weather_app/static/*` | Frontend files | `src/static/*` or `public/*` |
-| `tests/conftest.py` | Shared fixtures | `tests/setup.ts` or `tests/helpers.ts` |
-| `tests/factories.py` | Test data factories | `tests/factories.ts` |
-| `tests/unit/conftest.py` | Unit mock fixtures | `tests/unit/setup.ts` |
-| `tests/unit/test_converters.py` | Converter tests | `tests/unit/converters.test.ts` |
-| `tests/unit/test_models.py` | Model validation tests | `tests/unit/models.test.ts` |
-| `tests/unit/test_location_repo.py` | Repo CRUD tests | `tests/unit/location-repo.test.ts` |
-| `tests/unit/test_weather_service.py` | Service tests | `tests/unit/weather-service.test.ts` |
-| `tests/integration/test_weather_api.py` | Weather endpoint tests | `tests/integration/weather-api.test.ts` |
-| `tests/integration/test_locations_api.py` | Location endpoint tests | `tests/integration/locations-api.test.ts` |
-| — (new) | Playwright e2e tests | `tests/e2e/dashboard.spec.ts` |
+| Module | Suggested Path | Purpose |
+|--------|---------------|---------|
+| Entry point | `main.*` or `cmd/server/main.*` | Starts the HTTP server |
+| App factory | `app.*` or `internal/app.*` | Wires together middleware, routes, error handler |
+| Config | `config.*` or `internal/config.*` | Loads settings from env / `.env` |
+| Models/Types | `models.*` or `internal/models.*` | Type definitions + validation schemas |
+| DI Container | `dependencies.*` or `internal/container.*` | Factory for settings → services → app |
+| Weather router | `routers/weather.*` or `internal/handlers/weather.*` | 3 GET endpoints |
+| Locations router | `routers/locations.*` or `internal/handlers/locations.*` | 6 CRUD + weather endpoints |
+| OWM Client | `services/openweathermap.*` | HTTP client for One Call API 3.0 |
+| Weather Service | `services/weather_service.*` | Business logic |
+| Exceptions/Errors | `services/exceptions.*` or `internal/errors.*` | Domain error types |
+| Location Repo | `repositories/location_repo.*` | In-memory Map CRUD |
+| Converters | `utils/converters.*` | Pure conversion functions |
+| Frontend | `public/` or `static/` | index.html, style.css, app.js |
+| Test setup | `tests/setup.*` or `*_test.go` | Test helpers, mock factories |
+| Test factories | `tests/factories.*` | All factory functions |
+| Unit tests | `tests/unit/` | Converter, model, repo, service tests |
+| Integration tests | `tests/integration/` | HTTP endpoint tests |
+| E2E tests | `tests/e2e/` | Playwright browser tests |
 
 ---
 
-## Appendix B: OpenWeatherMap API Response Shapes
+## Appendix B: OpenWeatherMap One Call API 3.0 Response Shapes
 
-The client must parse these raw JSON structures. Test factories must produce them.
+The client calls `GET /data/3.0/onecall` with an `exclude` parameter to request only the needed sections. The response shape (with all sections included):
 
-### `/weather` response (abbreviated)
 ```json
 {
-  "coord": { "lon": -0.13, "lat": 51.51 },
-  "weather": [{ "id": 802, "main": "Clouds", "description": "scattered clouds", "icon": "03d" }],
-  "main": { "temp": 15.0, "feels_like": 13.5, "temp_min": 13.0, "temp_max": 17.0, "pressure": 1013, "humidity": 72 },
-  "wind": { "speed": 5.5, "deg": 220 },
-  "dt": 1718452800,
-  "name": "London"
-}
-```
-
-### `/forecast` response (abbreviated)
-```json
-{
-  "cod": "200",
-  "message": 0,
-  "cnt": 40,
-  "list": [
+  "lat": 51.51,
+  "lon": -0.13,
+  "timezone": "Europe/London",
+  "timezone_offset": 3600,
+  "current": {
+    "dt": 1718452800,
+    "temp": 15.0,
+    "feels_like": 13.5,
+    "pressure": 1013,
+    "humidity": 72,
+    "wind_speed": 5.5,
+    "wind_deg": 220,
+    "weather": [
+      { "id": 802, "main": "Clouds", "description": "scattered clouds", "icon": "03d" }
+    ]
+  },
+  "daily": [
     {
       "dt": 1718452800,
-      "main": { "temp": 15.0, "feels_like": 13.5, "temp_min": 14.0, "temp_max": 16.0, "pressure": 1013, "humidity": 65 },
-      "weather": [{ "id": 500, "main": "Rain", "description": "light rain", "icon": "10d" }],
-      "dt_txt": "2025-06-15 00:00:00"
+      "temp": { "min": 10.0, "max": 18.0, "day": 15.0, "night": 11.0, "eve": 14.0, "morn": 12.0 },
+      "humidity": 65,
+      "weather": [
+        { "id": 500, "main": "Rain", "description": "light rain", "icon": "10d" }
+      ]
     }
   ],
-  "city": { "id": 2643743, "name": "London", "coord": { "lat": 51.51, "lon": -0.13 }, "country": "GB" }
+  "alerts": [
+    {
+      "sender_name": "Met Office",
+      "event": "Yellow Wind Warning",
+      "start": 1718452800,
+      "end": 1718496000,
+      "description": "Strong winds expected across southern England...",
+      "tags": ["Wind"]
+    }
+  ]
 }
 ```
 
-The forecast data arrives in 3-hour intervals (up to 40 entries for 5 days). The service must aggregate these into daily summaries: min/max temperature, average humidity, most frequent description and icon per day.
+### Key points for parsing and test factories:
+
+- **`current`**: Single object. Temperature fields are floats in Celsius (metric). `weather` is an array but always has at least one entry — use the first.
+- **`daily`**: Array of daily forecasts. `temp` is a nested object with `min`/`max`/`day`/`night`/`eve`/`morn`. Pre-aggregated (no 3-hour interval aggregation needed, unlike API 2.5).
+- **`alerts`**: Array of government weather alerts. May be absent or empty. Fields use snake_case — the service maps to camelCase.
+- **`timezone`**: String like `"Europe/London"`. Used to derive `locationName` when not provided.
+- Sections excluded via the `exclude` parameter will be absent from the response.
